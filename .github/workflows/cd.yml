@@ -1,0 +1,296 @@
+name: CD
+
+on:
+  push:
+    paths-ignore:
+      - '.github/**'
+      - 'k8s/**'
+    branches: [ main ]
+
+permissions:
+  contents: write  
+
+env:
+  RESOURCE_GROUP: kml_rg_main-1b16ec3e66044cc5
+  AKS_NAME: aks-mibanco-cluster-prd
+  CONTAINER_NAME: mibanco-app
+  REGISTRY_NAME: acrmibancodevsecops1753825653
+
+jobs:
+  buildImage:
+    name: Build Image
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.image_info.outputs.image-tag }}
+      sha-short: ${{ steps.sha_short.outputs.sha_short }}
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        pip install -r src/requirements.txt
+
+    - name: Set SHA Short
+      id: sha_short
+      run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+    - name: Azure Login
+      uses: Azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Build and push to ACR
+      run: |
+        # Login to ACR
+        az acr login --name ${{ env.REGISTRY_NAME }}
+        
+        # Build image
+        IMAGE_TAG="${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.CONTAINER_NAME }}:${{ steps.sha_short.outputs.sha_short }}"
+        
+        # Check if Dockerfile exists
+        if [ ! -f "src/Dockerfile" ]; then
+          echo "❌ Dockerfile not found in src/"
+          echo "📁 Current directory contents:"
+          ls -la src/
+          exit 1
+        fi
+        
+        # Build and push
+        docker build -f src/Dockerfile -t $IMAGE_TAG src/
+        docker push $IMAGE_TAG
+        
+        echo "✅ Image built and pushed: $IMAGE_TAG"
+
+    - name: Set image info outputs
+      id: image_info
+      run: |
+        echo "image-tag=${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.CONTAINER_NAME }}:${{ steps.sha_short.outputs.sha_short }}" >> $GITHUB_OUTPUT
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: buildImage
+    outputs:
+      release-tag: ${{ steps.create_release.outputs.tag_name }}
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Generate release tag
+      id: tag_version
+      run: |
+        TAG="v$(date +'%Y%m%d')-${{ needs.buildImage.outputs.sha-short }}"
+        echo "tag=$TAG" >> $GITHUB_OUTPUT
+        echo "Generated release tag: $TAG"
+
+    - name: Create GitHub Release
+      id: create_release
+      uses: actions/create-release@v1.1.4
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.tag_version.outputs.tag }}
+        release_name: "Release ${{ steps.tag_version.outputs.tag }}"
+        body: |
+          ## 🚀 Reto DevSecOps Deployment
+          
+          ### 📋 Build Information:
+          - **Image**: `${{ needs.buildImage.outputs.image-tag }}`
+          - **Commit**: ${{ github.sha }}
+          - **Short SHA**: ${{ needs.buildImage.outputs.sha-short }}
+          - **Author**: ${{ github.actor }}
+          - **Registry**: ${{ env.REGISTRY_NAME }}.azurecr.io
+          
+          ### 🎯 Deployment Target:
+          - **AKS Cluster**: ${{ env.AKS_NAME }}
+          - **Resource Group**: ${{ env.RESOURCE_GROUP }}
+          - **Container**: ${{ env.CONTAINER_NAME }}
+          
+          ### 🔗 Links:
+          - [Commit Details](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
+          - [Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+        draft: false
+        prerelease: false
+
+  deploy:
+    name: Desplegar a AKS
+    needs: [buildImage, release]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+  
+    - name: Azure Login
+      uses: Azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+  
+    - name: Establecer contexto de AKS
+      uses: azure/aks-set-context@v3
+      with:
+        resource-group: ${{ env.RESOURCE_GROUP }}
+        cluster-name: ${{ env.AKS_NAME }}
+        admin: "false"
+  
+    - name: Verificar existencia del secreto de ACR
+      run: |
+        echo "🔍 Verificando si existe el secreto de ACR..."
+        if kubectl get secret acr-secret > /dev/null 2>&1; then
+          echo "✅ Secreto de ACR existe"
+        else
+          echo "❌ Secreto de ACR no encontrado!"
+          echo "🔧 Creando secreto de ACR..."
+          ACR_USERNAME=$(az acr credential show --name ${{ env.REGISTRY_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} --query username -o tsv)
+          ACR_PASSWORD=$(az acr credential show --name ${{ env.REGISTRY_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} --query passwords[0].value -o tsv)
+          kubectl create secret docker-registry acr-secret \
+            --docker-server=${{ env.REGISTRY_NAME }}.azurecr.io \
+            --docker-username=$ACR_USERNAME \
+            --docker-password=$ACR_PASSWORD \
+            --docker-email=noreply@example.com
+          echo "✅ Secreto de ACR creado"
+        fi
+  
+    - name: Instalar yq
+      run: |
+        sudo snap install yq || sudo apt-get install -y yq || true
+  
+    - name: Actualizar variables en manifiestos
+      run: |
+        # Actualizar imagen en deployment.yml
+        yq eval '.spec.template.spec.containers[0].image = "${{ needs.buildImage.outputs.image-tag }}"' -i k8s/deployment.yml
+        
+        echo "📋 Manifiesto actualizado con imagen: ${{ needs.buildImage.outputs.image-tag }}"
+  
+    - name: Depurar deployment.yml modificado
+      run: |
+        echo "📄 Contenido de deployment.yml modificado:"
+        cat k8s/deployment.yml
+  
+    - name: Desplegar a AKS
+      run: |
+        echo "Desplegando al clúster AKS: ${{ env.AKS_NAME }}"
+        kubectl apply -f k8s/
+        kubectl rollout status deployment/mibanco-app --timeout=600s
+        echo "✅ Despliegue completado exitosamente!"
+  
+    - name: Verificar despliegue
+      run: |
+        echo "=== VERIFICACIÓN DEL DESPLIEGUE ==="
+        echo ""
+        echo "📦 Pods:"
+        kubectl get pods -l app=mibanco-app -o wide
+        echo ""
+        echo "🔗 Servicios:"
+        kubectl get services
+        echo ""
+        echo "🌐 Ingress:"
+        kubectl get ingress
+        echo ""
+        echo "📈 HPA:"
+        kubectl get hpa
+        echo ""
+        echo "🚀 Detalles del Despliegue:"
+        kubectl describe deployment mibanco-app
+
+  validate:
+    name: Post-Deploy Validation
+    runs-on: ubuntu-latest
+    needs: [buildImage, release, deploy]
+    
+    steps:
+    - name: Azure Login
+      uses: Azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Set AKS context
+      uses: azure/aks-set-context@v3
+      with:
+        resource-group: ${{ env.RESOURCE_GROUP }}
+        cluster-name: ${{ env.AKS_NAME }}
+
+    - name: Application health test
+      run: |
+        echo "🧪 Testing application health..."
+        
+        # Wait for pods to be ready
+        kubectl wait --for=condition=ready pod -l app=mibanco-app --timeout=300s
+        
+        # Port forward for testing
+        kubectl port-forward service/mibanco-app-service 8080:80 &
+        PF_PID=$!
+        
+        # Wait for port forward to be ready
+        sleep 15
+        
+        # Test health endpoint
+        HEALTH_RESPONSE=$(curl -s http://localhost:8080/health || echo "FAILED")
+        APP_RESPONSE=$(curl -s http://localhost:8080/ || echo "FAILED")
+        
+        # Cleanup
+        kill $PF_PID
+        
+        # Verify responses
+        if [[ $HEALTH_RESPONSE == *"healthy"* ]]; then
+          echo "✅ Health check passed: $HEALTH_RESPONSE"
+        else
+          echo "❌ Health check failed: $HEALTH_RESPONSE"
+          exit 1
+        fi
+        
+        if [[ $APP_RESPONSE == *"Hola Mibanco"* ]]; then
+          echo "✅ Application test passed: $APP_RESPONSE"
+        else
+          echo "❌ Application test failed: $APP_RESPONSE"
+          exit 1
+        fi
+
+    - name: Get external access info
+      run: |
+        echo "🌐 === EXTERNAL ACCESS INFO ==="
+        
+        # Get Load Balancer IP
+        EXTERNAL_IP=$(kubectl get service -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
+        
+        if [ "$EXTERNAL_IP" != "pending" ] && [ ! -z "$EXTERNAL_IP" ]; then
+          echo "🔗 Application URL: http://$EXTERNAL_IP/"
+          echo "🏥 Health Check URL: http://$EXTERNAL_IP/health"
+          echo "📱 Ready for Postman testing!"
+        else
+          echo "⏳ External IP still pending assignment..."
+          kubectl get service -n ingress-nginx ingress-nginx-controller
+        fi
+
+    - name: Deployment summary
+      run: |
+        echo "## 🎉 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### ✅ Successfully Deployed:" >> $GITHUB_STEP_SUMMARY
+        echo "- **Release**: ${{ needs.release.outputs.release-tag }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Image**: \`${{ needs.buildImage.outputs.image-tag }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Short SHA**: ${{ needs.buildImage.outputs.sha-short }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **AKS Cluster**: ${{ env.AKS_NAME }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Registry**: ${{ env.REGISTRY_NAME }}.azurecr.io" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🔍 Validation Results:" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Pods are running and ready" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Health check endpoint responds correctly" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Application returns 'Hola Mibanco'" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🌐 Testing:" >> $GITHUB_STEP_SUMMARY
+        echo "1. Get external IP: \`kubectl get service -n ingress-nginx ingress-nginx-controller\`" >> $GITHUB_STEP_SUMMARY
+        echo "2. Test with Postman: \`GET http://[EXTERNAL-IP]/\`" >> $GITHUB_STEP_SUMMARY
+        echo "3. Expected response: \`{\"message\": \"Hola Mibanco\"}\`" >> $GITHUB_STEP_SUMMARY

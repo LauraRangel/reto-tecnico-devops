@@ -1,2 +1,2 @@
-# reto-tecnico-devops
-Repositorio reto para poner a prueba conocimiento técnicos de devops
+# reto-mibanco
+Repositorio reto que aplica conocimiento de Github action, y aprovisionamiento de infraestructura en la nube.
