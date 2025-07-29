@@ -2,6 +2,8 @@ name: Pull request - CI
 
 on:
   pull_request:
+    paths:
+     - 'src/**'
     branches: [ main ]
 
 permissions:
