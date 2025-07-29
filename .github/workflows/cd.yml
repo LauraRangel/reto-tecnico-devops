@@ -14,7 +14,7 @@ env:
   RESOURCE_GROUP: kml_rg_main-1b16ec3e66044cc5
   AKS_NAME: aks-mibanco-cluster-prd
   CONTAINER_NAME: mibanco-app
-  REGISTRY_NAME: acrmibancodevsecops1753825653
+  REGISTRY_NAME: acrmibancodevsecops
 
 jobs:
   buildImage:
