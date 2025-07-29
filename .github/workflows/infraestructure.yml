@@ -1,0 +1,266 @@
+name: Provision Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'create'
+        type: choice
+        options:
+        - create
+        - destroy
+
+env:
+  RESOURCE_GROUP: kml_rg_main-1b16ec3e66044cc5
+  AKS_NAME: aks-mibanco-cluster-prd
+  CONTAINER_NAME: mibanco-app
+  AZURE_LOCATION: eastus
+
+jobs:
+  infrastructure:
+    name: Infrastructure
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Azure Login
+      uses: Azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Create Infrastructure
+      if: ${{ inputs.action == 'create' }}
+      run: |
+        echo "=== CREATING INFRASTRUCTURE ==="
+        echo ""
+        
+        # Generate unique ACR name
+        ACR_NAME="acrmibancodevsecops"
+        echo "ACR_NAME=$ACR_NAME" >> $GITHUB_ENV
+        
+        echo "Resources to create:"
+        echo "- Resource Group: ${{ env.RESOURCE_GROUP }} (using existing)"
+        echo "- AKS Cluster: ${{ env.AKS_NAME }}"
+        echo "- ACR Registry: $ACR_NAME"
+        echo "- Location: ${{ env.AZURE_LOCATION }}"
+        echo ""
+
+        # 1. Verify Resource Group exists (don't create)
+        echo "📦 Verifying Resource Group exists..."
+        if az group show --name ${{ env.RESOURCE_GROUP }} > /dev/null 2>&1; then
+          echo "✅ Resource Group exists: ${{ env.RESOURCE_GROUP }}"
+          RG_LOCATION=$(az group show --name ${{ env.RESOURCE_GROUP }} --query location -o tsv)
+          echo "📍 Resource Group location: $RG_LOCATION"
+        else
+          echo "❌ Resource Group not found: ${{ env.RESOURCE_GROUP }}"
+          echo ""
+          echo "🔍 Available Resource Groups:"
+          az group list --query "[].{Name:name, Location:location}" -o table
+          echo ""
+          echo "💡 Please update the RESOURCE_GROUP variable with an existing RG name"
+          exit 1
+        fi
+
+        # 2. Create Azure Container Registry
+        echo "🐳 Creating Azure Container Registry..."
+        if az acr show --name $ACR_NAME > /dev/null 2>&1; then
+          echo "⚠️ ACR name already exists, generating new one..."
+          ACR_NAME="acrmibancodevsecops"
+          echo "ACR_NAME=$ACR_NAME" >> $GITHUB_ENV
+        fi
+        
+        az acr create \
+          --resource-group ${{ env.RESOURCE_GROUP }} \
+          --name $ACR_NAME \
+          --sku Basic \
+          --admin-enabled true
+        
+        echo "✅ ACR created: $ACR_NAME"
+
+        # 3. Create AKS Cluster (without ACR attachment)
+        echo "☸️ Creating AKS Cluster..."
+        if az aks show --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.AKS_NAME }} > /dev/null 2>&1; then
+          echo "⚠️ AKS cluster already exists: ${{ env.AKS_NAME }}"
+        else
+          az aks create \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name ${{ env.AKS_NAME }} \
+            --node-count 1 \
+            --node-vm-size Standard_D2s_v3 \
+            --generate-ssh-keys \
+            --enable-managed-identity
+          
+          echo "✅ AKS Cluster created (without ACR attachment)"
+        fi
+
+        # 4. Get AKS credentials
+        echo "🔑 Getting AKS credentials..."
+        az aks get-credentials \
+          --resource-group ${{ env.RESOURCE_GROUP }} \
+          --name ${{ env.AKS_NAME }} \
+          --overwrite-existing
+
+        # 5. Configure ACR access using admin credentials
+        echo "🔗 Configuring ACR access using admin credentials..."
+        ACR_SERVER=$(az acr show --name $ACR_NAME --resource-group ${{ env.RESOURCE_GROUP }} --query loginServer -o tsv)
+        ACR_USERNAME=$(az acr credential show --name $ACR_NAME --resource-group ${{ env.RESOURCE_GROUP }} --query username -o tsv)
+        ACR_PASSWORD=$(az acr credential show --name $ACR_NAME --resource-group ${{ env.RESOURCE_GROUP }} --query passwords[0].value -o tsv)
+        
+        # Create Kubernetes secret for ACR access
+        kubectl create secret docker-registry acr-secret \
+          --docker-server=$ACR_SERVER \
+          --docker-username=$ACR_USERNAME \
+          --docker-password=$ACR_PASSWORD \
+          --docker-email=noreply@example.com \
+          --dry-run=client -o yaml | kubectl apply -f -
+        
+        echo "✅ ACR access configured via Kubernetes secret (no roles needed)"
+
+        # 6. Install NGINX Ingress Controller
+        echo "🌐 Installing NGINX Ingress Controller..."
+        if kubectl get namespace ingress-nginx > /dev/null 2>&1; then
+          echo "✅ NGINX Ingress Controller already installed"
+        else
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.2/deploy/static/provider/cloud/deploy.yaml
+          
+          # Wait for ingress controller
+          echo "⏳ Waiting for NGINX Ingress Controller..."
+          kubectl wait --namespace ingress-nginx \
+            --for=condition=ready pod \
+            --selector=app.kubernetes.io/component=controller \
+            --timeout=300s
+        fi
+
+        echo ""
+        echo "=== INFRASTRUCTURE CREATED SUCCESSFULLY ==="
+
+    - name: Verify Infrastructure
+      if: ${{ inputs.action == 'create' }}
+      run: |
+        echo "🔍 === VERIFYING INFRASTRUCTURE ==="
+        echo ""
+        
+        # Get ACR info
+        echo "🐳 Azure Container Registry:"
+        az acr list --resource-group ${{ env.RESOURCE_GROUP }} --query "[].{Name:name, LoginServer:loginServer}" -o table
+        echo ""
+        
+        # Get AKS info
+        echo "☸️ AKS Cluster:"
+        az aks show --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.AKS_NAME }} --query "{Name:name, Status:provisioningState, KubernetesVersion:kubernetesVersion}" -o table
+        echo ""
+        
+        # Test kubectl connectivity
+        echo "🔗 Kubernetes nodes:"
+        kubectl get nodes
+        echo ""
+        
+        # Check ingress controller
+        echo "🌐 NGINX Ingress Controller:"
+        kubectl get pods -n ingress-nginx -l app.kubernetes.io/component=controller
+        echo ""
+        
+        # Show services
+        echo "🔗 Ingress Controller Service:"
+        kubectl get service -n ingress-nginx ingress-nginx-controller
+        
+        echo ""
+        echo "✅ All components verified successfully!"
+
+    - name: Generate Success Summary
+      if: ${{ inputs.action == 'create' }}
+      run: |
+        # Get resource details
+        ACR_LOGIN_SERVER=$(az acr list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].loginServer" -o tsv)
+        ACR_NAME_ONLY=$(az acr list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv)
+        
+        echo "## 🎉 Infrastructure Created Successfully" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📋 Resources Created:" >> $GITHUB_STEP_SUMMARY
+        echo "- **Resource Group**: \`${{ env.RESOURCE_GROUP }}\` (existing)" >> $GITHUB_STEP_SUMMARY
+        echo "- **AKS Cluster**: \`${{ env.AKS_NAME }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **ACR Registry**: \`$ACR_LOGIN_SERVER\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Location**: ${{ env.AZURE_LOCATION }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🔧 Next Steps:" >> $GITHUB_STEP_SUMMARY
+        echo "1. **Update your CD workflow** with the ACR name:" >> $GITHUB_STEP_SUMMARY
+        echo "   \`\`\`yaml" >> $GITHUB_STEP_SUMMARY
+        echo "   env:" >> $GITHUB_STEP_SUMMARY
+        echo "     REGISTRY_NAME: $ACR_NAME_ONLY  # ← Copy this" >> $GITHUB_STEP_SUMMARY
+        echo "   \`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "2. **Push your code** to main branch to trigger deployment" >> $GITHUB_STEP_SUMMARY
+        echo "3. **Test with Postman** once deployed" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 💡 Useful Commands:" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+        echo "# Connect to your cluster" >> $GITHUB_STEP_SUMMARY
+        echo "az aks get-credentials --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.AKS_NAME }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "# Check your pods" >> $GITHUB_STEP_SUMMARY
+        echo "kubectl get pods" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "# Get external IP" >> $GITHUB_STEP_SUMMARY
+        echo "kubectl get service -n ingress-nginx ingress-nginx-controller" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+    - name: Destroy Infrastructure
+      if: ${{ inputs.action == 'destroy' }}
+      run: |
+        echo "=== DESTROYING INFRASTRUCTURE ==="
+        echo ""
+        echo "⚠️ This will delete AKS and ACR from: ${{ env.RESOURCE_GROUP }}"
+        echo "📦 Resource Group will NOT be deleted (it's your existing RG)"
+        echo ""
+        
+        if az group show --name ${{ env.RESOURCE_GROUP }} > /dev/null 2>&1; then
+          echo "🔍 AKS and ACR resources to be deleted:"
+          
+          # Check AKS
+          if az aks show --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.AKS_NAME }} > /dev/null 2>&1; then
+            echo "- AKS Cluster: ${{ env.AKS_NAME }}"
+            echo "Deleting AKS Cluster..."
+            az aks delete --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.AKS_NAME }} --yes --no-wait
+            echo "✅ AKS deletion initiated"
+          else
+            echo "- AKS Cluster: Not found"
+          fi
+          
+          # Check ACR
+          ACR_LIST=$(az acr list --resource-group ${{ env.RESOURCE_GROUP }} --query "[].name" -o tsv)
+          if [ ! -z "$ACR_LIST" ]; then
+            for ACR_NAME in $ACR_LIST; do
+              if [[ $ACR_NAME == acrmibancodevsecops* ]]; then
+                echo "- ACR Registry: $ACR_NAME"
+                echo "Deleting ACR..."
+                az acr delete --resource-group ${{ env.RESOURCE_GROUP }} --name $ACR_NAME --yes
+                echo "✅ ACR deleted: $ACR_NAME"
+              fi
+            done
+          else
+            echo "- ACR Registry: Not found"
+          fi
+          
+          echo ""
+          echo "✅ Infrastructure cleanup completed"
+          echo "📦 Your Resource Group '${{ env.RESOURCE_GROUP }}' remains untouched"
+        else
+          echo "❌ Resource Group doesn't exist: ${{ env.RESOURCE_GROUP }}"
+        fi
+
+    - name: Generate Cleanup Summary
+      if: ${{ inputs.action == 'destroy' }}
+      run: |
+        echo "## 🗑️ Infrastructure Cleanup" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📋 Status:" >> $GITHUB_STEP_SUMMARY
+        echo "- **AKS Cluster**: 🗑️ Deleted" >> $GITHUB_STEP_SUMMARY
+        echo "- **ACR Registry**: 🗑️ Deleted" >> $GITHUB_STEP_SUMMARY
+        echo "- **Resource Group**: ✅ Preserved (your existing RG)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 💡 Note:" >> $GITHUB_STEP_SUMMARY
+        echo "Only the Mibanco-specific resources were deleted." >> $GITHUB_STEP_SUMMARY
+        echo "Your existing Resource Group and other resources remain intact." >> $GITHUB_STEP_SUMMARY

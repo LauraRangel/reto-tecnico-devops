@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mibanco-app-service
+  labels:
+    app: mibanco-app
+  annotations:
+    description: "Reto tecnico devops Mibanco"
+spec:
+  selector:
+    app: mibanco-app
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 5000
+  type: ClusterIP
+  sessionAffinity: None
