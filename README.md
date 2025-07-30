@@ -11,7 +11,7 @@ Implementación completa de flujo DevSecOps para el reto técnico de Mibanco. In
 - **Orchestration**: Azure Kubernetes Service (AKS)
 - **Ingress**: NGINX Ingress Controller
 - **CI/CD**: GitHub Actions
-- **Security**: Dependency Review + Grype scanning
+- **Security**: Dependency Review + Grype scanning + CodeQl
 
 # Diagramas
 
