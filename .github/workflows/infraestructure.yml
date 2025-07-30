@@ -13,7 +13,7 @@ on:
         - destroy
 
 env:
-  RESOURCE_GROUP: kml_rg_main-1b16ec3e66044cc5
+  RESOURCE_GROUP: kml_rg_main-2ed9b3fa17034006
   AKS_NAME: aks-mibanco-cluster-prd
   CONTAINER_NAME: mibanco-app
   AZURE_LOCATION: eastus
