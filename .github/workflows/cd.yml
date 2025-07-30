@@ -11,7 +11,7 @@ permissions:
   contents: write  
 
 env:
-  RESOURCE_GROUP: kml_rg_main-2ed9b3fa17034006
+  RESOURCE_GROUP: kml_rg_main-fc859061785d4b4b
   AKS_NAME: aks-mibanco-cluster-prd
   CONTAINER_NAME: mibanco-app
   REGISTRY_NAME: acrmibancodevsecops
