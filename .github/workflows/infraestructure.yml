@@ -259,7 +259,7 @@ jobs:
         echo "### 📋 Status:" >> $GITHUB_STEP_SUMMARY
         echo "- **AKS Cluster**: 🗑️ Deleted" >> $GITHUB_STEP_SUMMARY
         echo "- **ACR Registry**: 🗑️ Deleted" >> $GITHUB_STEP_SUMMARY
-        echo "- **Resource Group**: ✅ Preserved (your existing RG)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Resource Group**: ✅ Preserved" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### 💡 Note:" >> $GITHUB_STEP_SUMMARY
         echo "Only the Mibanco-specific resources were deleted." >> $GITHUB_STEP_SUMMARY
