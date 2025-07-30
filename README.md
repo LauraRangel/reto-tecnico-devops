@@ -320,7 +320,7 @@ Response: {"status": "healthy"}
 - ✅ **Rulesets** con PR approvals
 - ✅ **Resource limits** y security policies
 
-## 📊 Manifiestos K8s
+## Manifiestos K8s
 
 - **deployment.yml**: 1 replica con health checks y security contexts
 - **service.yml**: ClusterIP para comunicación interna
