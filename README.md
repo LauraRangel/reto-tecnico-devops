@@ -1,5 +1,4 @@
-# Reto Técnico DevSecOps - Mibanco
-
+# Reto Técnico DevSecOps
 Implementación completa de flujo DevSecOps para el reto técnico de Mibanco. Incluye aplicación Flask, pipelines CI/CD automatizados, escaneo de seguridad y despliegue en Azure Kubernetes Service.
 
 **Funcionalidad**: API que responde `{"message": "Hola Mibanco"}` en el endpoint raíz.
