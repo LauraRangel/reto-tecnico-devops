@@ -86,11 +86,3 @@ jobs:
         if: always()
         with:
           sarif_file: ${{ steps.scan.outputs.sarif }}
-
-      - name: Upload SARIF as artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: container-scan-sarif
-          path: ${{ steps.scan.outputs.sarif }}
-          retention-days: 1
