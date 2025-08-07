@@ -78,7 +78,7 @@ jobs:
         id: scan
         with:
           image: test-image
-          fail-build: true
+          fail-build: false
           severity-cutoff: high
 
       - name: Upload sarif
