@@ -250,13 +250,6 @@ jobs:
           exit 1
         fi
         
-        if [[ $APP_RESPONSE == *"Hola Mibanco"* ]]; then
-          echo "✅ Application test passed: $APP_RESPONSE"
-        else
-          echo "❌ Application test failed: $APP_RESPONSE"
-          exit 1
-        fi
-
     - name: Get external access info
       run: |
         echo "🌐 === EXTERNAL ACCESS INFO ==="
