@@ -13,10 +13,10 @@ on:
         - destroy
 
 env:
-  RESOURCE_GROUP: kml_rg_main-797408431bb14e74
-  AKS_NAME: aks-mibanco-cluster
-  CONTAINER_NAME: mibanco-app
-  AZURE_LOCATION: eastus
+  RESOURCE_GROUP: ${{vars.RESOURCE_GROUP}}
+  AKS_NAME: ${{vars.AKS_NAME}}
+  CONTAINER_NAME: ${{vars.CONTAINER_NAME}}
+  AZURE_LOCATION: ${{vars.AZURE_LOCATION}}
 
 jobs:
   infrastructure:
